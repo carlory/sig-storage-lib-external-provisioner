@@ -31,7 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	storage "k8s.io/api/storage/v1"
 	storagebeta "k8s.io/api/storage/v1beta1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
@@ -44,7 +44,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
@@ -165,9 +167,34 @@ type ProvisionController struct {
 	claimsInProgress sync.Map
 
 	volumeStore VolumeStore
+
+	// pvcLister is the shared PVC lister used to fetch and store PVC
+	// object from the API server. It is shared with other controllers
+	// and therefore the PVC objects in its store should be treated as
+	// immutable.
+	pvcLister corelisters.PersistentVolumeClaimLister
+
+	// pvLister is the shared PV lister used to fetch and store PV object
+	// from the API server. It is shared with other controllers and therefore
+	// the PV objects in its store should be treated as immutable.
+	pvLister corelisters.PersistentVolumeLister
+
+	// Volume resize map of volumes that needs resizing
+	resizeMap VolumeResizeMap
+
+	// How often pvc populator runs
+	populatorLoopPeriod time.Duration
+
+	// populator for periodically polling all PVCs
+	pvcPopulator PVCPopulator
+
+	// Worker goroutine to process resize requests from resizeMap
+	syncResize SyncVolumeResize
 }
 
 const (
+	// DefaultPopulatorLoopPeriod is how often pvc populator runs
+	DefaultPopulatorLoopPeriod = 2 * time.Minute
 	// DefaultResyncPeriod is used when option function ResyncPeriod is omitted
 	DefaultResyncPeriod = 15 * time.Minute
 	// DefaultThreadiness is used when option function Threadiness is omitted
@@ -569,6 +596,7 @@ func NewProvisionController(
 		metricsPath:               DefaultMetricsPath,
 		hasRun:                    false,
 		hasRunLock:                &sync.Mutex{},
+		populatorLoopPeriod:       DefaultPopulatorLoopPeriod,
 	}
 
 	for _, option := range options {
@@ -621,15 +649,45 @@ func NewProvisionController(
 
 	informer := informers.NewSharedInformerFactory(client, controller.resyncPeriod)
 
+	controller.pvcLister = informer.Core().V1().PersistentVolumeClaims().Lister()
+	controller.pvLister = informer.Core().V1().PersistentVolumes().Lister()
+
+	controller.resizeMap = NewVolumeResizeMap(controller.client)
+	controller.pvcPopulator = NewPVCPopulator(
+		controller.populatorLoopPeriod,
+		controller.resizeMap,
+		controller.pvcLister,
+		controller.pvLister,
+		controller.client,
+	)
+
+	if controller.supportsExpandable() {
+		controller.syncResize = NewSyncVolumeResize(
+			controller.resyncPeriod,
+			controller.resizeMap,
+			controller.client,
+			controller.provisioner.(ExpandableProvisioner),
+			controller.eventRecorder,
+		)
+	} else {
+		controller.syncResize = NewSyncVolumeResize(
+			controller.resyncPeriod,
+			controller.resizeMap,
+			controller.client,
+			nil,
+			controller.eventRecorder,
+		)
+	}
 	// ----------------------
 	// PersistentVolumeClaims
 
 	claimHandler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { controller.enqueueClaim(obj) },
-		UpdateFunc: func(oldObj, newObj interface{}) { controller.enqueueClaim(newObj) },
+		UpdateFunc: controller.pvcUpdate,
 		DeleteFunc: func(obj interface{}) {
 			// NOOP. The claim is either in claimsInProgress and in the queue, so it will be processed as usual
 			// or it's not in claimsInProgress and then we don't care
+			controller.deletePVC(obj)
 		},
 	}
 
@@ -694,6 +752,51 @@ func getObjectUID(obj interface{}) (string, error) {
 		}
 	}
 	return string(object.GetUID()), nil
+}
+
+func (ctrl *ProvisionController) pvcUpdate(oldObj, newObj interface{}) {
+	oldPVC, ok := oldObj.(*v1.PersistentVolumeClaim)
+	if oldPVC == nil || !ok {
+		return
+	}
+
+	newPVC, ok := newObj.(*v1.PersistentVolumeClaim)
+	if newPVC == nil || !ok {
+		return
+	}
+
+	newSize := newPVC.Spec.Resources.Requests[v1.ResourceStorage]
+	oldSize := oldPVC.Spec.Resources.Requests[v1.ResourceStorage]
+
+	if newSize.Cmp(oldSize) > 0 {
+		pv, err := getPersistentVolume(newPVC, ctrl.pvLister)
+		if err != nil {
+			glog.V(5).Infof("Error getting Persistent Volume for PVC %q: %v", newPVC.UID, err)
+			ctrl.enqueueClaim(newObj)
+			return
+		}
+
+		ctrl.resizeMap.AddPVCUpdate(newPVC, pv)
+	}
+
+	ctrl.enqueueClaim(newObj)
+}
+
+func (ctrl *ProvisionController) deletePVC(obj interface{}) {
+	pvc, ok := obj.(*v1.PersistentVolumeClaim)
+	if !ok {
+		tombstone, ok := obj.(kcache.DeletedFinalStateUnknown)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("couldn't get object from tombstone %+v", obj))
+			return
+		}
+		pvc, ok = tombstone.Obj.(*v1.PersistentVolumeClaim)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("tombstone contained object that is not a pvc %#v", obj))
+			return
+		}
+	}
+	ctrl.resizeMap.DeletePVC(pvc)
 }
 
 // enqueueClaim takes an obj and converts it into UID that is then put onto claim work queue.
@@ -793,6 +896,9 @@ func (ctrl *ProvisionController) Run(_ <-chan struct{}) {
 			go wait.Until(ctrl.runClaimWorker, time.Second, context.TODO().Done())
 			go wait.Until(ctrl.runVolumeWorker, time.Second, context.TODO().Done())
 		}
+
+		go ctrl.pvcPopulator.Run(ctx.Done())
+		go ctrl.syncResize.Run(ctx.Done())
 
 		glog.Infof("Started provisioner controller %s!", ctrl.component)
 
@@ -1496,4 +1602,9 @@ func (ctrl *ProvisionController) supportsBlock() bool {
 		return blockProvisioner.SupportsBlock()
 	}
 	return false
+}
+
+func (ctrl *ProvisionController) supportsExpandable() bool {
+	_, canExpandable := ctrl.provisioner.(ExpandableProvisioner)
+	return canExpandable
 }

@@ -19,7 +19,9 @@ package controller
 import (
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/volume"
 )
 
 // Provisioner is an interface that creates templates for PersistentVolumes
@@ -52,6 +54,14 @@ type Qualifier interface {
 type DeletionGuard interface {
 	// ShouldDelete returns whether deleting the PV should be attempted.
 	ShouldDelete(volume *v1.PersistentVolume) bool
+}
+
+// ExpandableProvisioner is an extended interface of Provisioner and is used for volumes that can be
+// expanded
+type ExpandableProvisioner interface {
+	Provisioner
+	ExpandVolumeDevice(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error)
+	RequiresFSResize() bool
 }
 
 // BlockProvisioner is an optional interface implemented by provisioners to determine
