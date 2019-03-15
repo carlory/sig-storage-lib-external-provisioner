@@ -23,8 +23,8 @@ import (
 	"path"
 	"syscall"
 
+	"github.com/carlory/sig-storage-lib-external-provisioner/controller"
 	"github.com/golang/glog"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
