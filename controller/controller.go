@@ -188,6 +188,9 @@ type ProvisionController struct {
 	// populator for periodically polling all PVCs
 	pvcPopulator PVCPopulator
 
+	// how often sync volume resize runs
+	resizeLoopPeriod time.Duration
+
 	// Worker goroutine to process resize requests from resizeMap
 	syncResize SyncVolumeResize
 }
@@ -195,6 +198,8 @@ type ProvisionController struct {
 const (
 	// DefaultPopulatorLoopPeriod is how often pvc populator runs
 	DefaultPopulatorLoopPeriod = 2 * time.Minute
+	// DefaultVolumeResizeLoopPeriod is how often sync volume resize runs
+	DefaultVolumeResizeLoopPeriod = 5 * time.Second
 	// DefaultResyncPeriod is used when option function ResyncPeriod is omitted
 	DefaultResyncPeriod = 15 * time.Minute
 	// DefaultThreadiness is used when option function Threadiness is omitted
@@ -597,6 +602,7 @@ func NewProvisionController(
 		hasRun:                    false,
 		hasRunLock:                &sync.Mutex{},
 		populatorLoopPeriod:       DefaultPopulatorLoopPeriod,
+		resizeLoopPeriod:          DefaultVolumeResizeLoopPeriod,
 	}
 
 	for _, option := range options {
@@ -663,7 +669,7 @@ func NewProvisionController(
 
 	if controller.supportsExpandable() {
 		controller.syncResize = NewSyncVolumeResize(
-			controller.resyncPeriod,
+			controller.resizeLoopPeriod,
 			controller.resizeMap,
 			controller.client,
 			controller.provisioner.(ExpandableProvisioner),
@@ -671,7 +677,7 @@ func NewProvisionController(
 		)
 	} else {
 		controller.syncResize = NewSyncVolumeResize(
-			controller.resyncPeriod,
+			controller.resizeLoopPeriod,
 			controller.resizeMap,
 			controller.client,
 			nil,
