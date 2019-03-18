@@ -94,6 +94,7 @@ func (rc *syncResize) expandVolume(pvcr *PVCWithResizeRequest) error {
 	if pvSize.Cmp(newSize) < 0 {
 		updatedSize, expandErr := rc.provisioner.ExpandVolumeDevice(volumeSpec, pvcr.ExpectedSize, pvcr.CurrentSize)
 		if expandErr != nil {
+			rc.recorder.Eventf(pvcr.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, expandErr.Error())
 			return fmt.Errorf("Error expanding volume %q of provisioner: %v", pvcr.QualifiedName(), expandErr)
 		}
 		klog.Infof("ExpandVolume succeeded for volume %s", pvcr.QualifiedName())
@@ -104,6 +105,7 @@ func (rc *syncResize) expandVolume(pvcr *PVCWithResizeRequest) error {
 		// until they reflect user requested size in pvc.Status.Size
 		updateErr := rc.resizeMap.UpdatePVSize(pvcr, newSize)
 		if updateErr != nil {
+			rc.recorder.Eventf(pvcr.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, updateErr.Error())
 			return fmt.Errorf("Error updating PV spec capacity for volume %q with : %v", pvcr.QualifiedName(), updateErr)
 		}
 		klog.Infof("ExpandVolume.UpdatePV succeeded for volume %s", pvcr.QualifiedName())
@@ -113,6 +115,7 @@ func (rc *syncResize) expandVolume(pvcr *PVCWithResizeRequest) error {
 		klog.V(4).Infof("Controller resizing done for PVC %s", pvcr.QualifiedName())
 		err := rc.resizeMap.MarkAsResized(pvcr, newSize)
 		if err != nil {
+			rc.recorder.Eventf(pvcr.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, err.Error())
 			return fmt.Errorf("Error marking pvc %s as resized : %v", pvcr.QualifiedName(), err)
 		}
 		successMsg := fmt.Sprintf("ExpandVolume succeeded for volume %s", pvcr.QualifiedName())
