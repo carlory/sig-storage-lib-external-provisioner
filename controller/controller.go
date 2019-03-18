@@ -664,6 +664,7 @@ func NewProvisionController(
 		controller.resizeMap,
 		controller.pvcLister,
 		controller.pvLister,
+		controller.shouldExpand,
 		controller.client,
 	)
 
@@ -774,11 +775,10 @@ func (ctrl *ProvisionController) pvcUpdate(oldObj, newObj interface{}) {
 	newSize := newPVC.Spec.Resources.Requests[v1.ResourceStorage]
 	oldSize := oldPVC.Spec.Resources.Requests[v1.ResourceStorage]
 
-	if newSize.Cmp(oldSize) > 0 {
+	if newSize.Cmp(oldSize) > 0 && ctrl.shouldExpand(newPVC) {
 		pv, err := getPersistentVolume(newPVC, ctrl.pvLister)
 		if err != nil {
 			glog.V(5).Infof("Error getting Persistent Volume for PVC %q: %v", newPVC.UID, err)
-			ctrl.enqueueClaim(newObj)
 			return
 		}
 
@@ -1145,6 +1145,45 @@ func (ctrl *ProvisionController) knownProvisioner(provisioner string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+// shouldExpand returns whether a claim should have a volume resized for
+// it, i.e. whether an Expansion is "desired"
+func (ctrl *ProvisionController) shouldExpand(claim *v1.PersistentVolumeClaim) bool {
+	if claim.Status.Phase != v1.ClaimBound {
+		return false
+	}
+
+	pvcSize := claim.Spec.Resources.Requests[v1.ResourceStorage]
+	pvcStatusSize := claim.Status.Capacity[v1.ResourceStorage]
+
+	if pvcStatusSize.Cmp(pvcSize) >= 0 {
+		return false
+	}
+
+	// Kubernetes 1.5 provisioning with annStorageProvisioner
+	if ctrl.kubeVersion.AtLeast(utilversion.MustParseSemantic("v1.5.0")) {
+		if provisioner, found := claim.Annotations[annStorageProvisioner]; found {
+			if ctrl.knownProvisioner(provisioner) {
+				return true
+			}
+		}
+	} else {
+		// Kubernetes 1.4 provisioning, evaluating class.Provisioner
+		claimClass := util.GetPersistentVolumeClaimClass(claim)
+		provisioner, _, err := ctrl.getStorageClassFields(claimClass)
+		if err != nil {
+			glog.Errorf("Error getting claim %q's StorageClass's fields: %v", claimToClaimKey(claim), err)
+			return false
+		}
+		if provisioner != ctrl.provisionerName {
+			return false
+		}
+
+		return true
+	}
+
 	return false
 }
 

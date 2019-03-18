@@ -38,12 +38,13 @@ type PVCPopulator interface {
 }
 
 type pvcPopulator struct {
-	loopPeriod time.Duration
-	resizeMap  VolumeResizeMap
-	pvcLister  corelisters.PersistentVolumeClaimLister
-	pvLister   corelisters.PersistentVolumeLister
-	kubeClient kubernetes.Interface
-	recorder   record.EventRecorder
+	loopPeriod       time.Duration
+	resizeMap        VolumeResizeMap
+	pvcLister        corelisters.PersistentVolumeClaimLister
+	pvLister         corelisters.PersistentVolumeLister
+	kubeClient       kubernetes.Interface
+	recorder         record.EventRecorder
+	shouldExpandFunc func(chaim *v1.PersistentVolumeClaim) bool
 }
 
 // NewPVCPopulator returns PVCPopulator
@@ -52,13 +53,15 @@ func NewPVCPopulator(
 	resizeMap VolumeResizeMap,
 	pvcLister corelisters.PersistentVolumeClaimLister,
 	pvLister corelisters.PersistentVolumeLister,
+	shouldExpandFunc func(chaim *v1.PersistentVolumeClaim) bool,
 	kubeClient kubernetes.Interface) PVCPopulator {
 	populator := &pvcPopulator{
-		loopPeriod: loopPeriod,
-		resizeMap:  resizeMap,
-		pvcLister:  pvcLister,
-		pvLister:   pvLister,
-		kubeClient: kubeClient,
+		loopPeriod:       loopPeriod,
+		resizeMap:        resizeMap,
+		pvcLister:        pvcLister,
+		pvLister:         pvLister,
+		shouldExpandFunc: shouldExpandFunc,
+		kubeClient:       kubeClient,
 	}
 
 	eventBroadcaster := record.NewBroadcaster()
@@ -79,6 +82,9 @@ func (populator *pvcPopulator) Sync() {
 	}
 
 	for _, pvc := range pvcs {
+		if !populator.shouldExpandFunc(pvc) {
+			continue
+		}
 		pv, err := getPersistentVolume(pvc, populator.pvLister)
 		if err != nil {
 			klog.Errorf("Error getting persistent volume for PVC %q: %v", pvc.UID, err)
