@@ -80,7 +80,6 @@ func TestController(t *testing.T) {
 		expectedStoredVolumes      []*v1.PersistentVolume
 		expectedMetrics            testMetrics
 		deletionTimestamp          *metav1.Time
-		addFinalizer               bool
 	}{
 		{
 			name: "provision for claim-1 but not claim-2",
@@ -635,7 +634,6 @@ func TestController(t *testing.T) {
 				newStorageClass("class-1", "foo.bar/baz"),
 				newClaim("claim-1", "uid-1-1", "class-1", "foo.bar/baz", "", nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newProvisioner(t, "pvc-uid-1-1", ProvisioningFinished, nil),
 			expectedVolumes: []v1.PersistentVolume{
@@ -648,23 +646,10 @@ func TestController(t *testing.T) {
 			},
 		},
 		{
-			name: "ensure finalizer is removed if the addFinalizer config option is false",
-			objs: []runtime.Object{
-				newVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, nil),
-			},
-			addFinalizer:    false,
-			provisionerName: "foo.bar/baz",
-			provisioner:     newTestProvisioner(),
-			expectedVolumes: []v1.PersistentVolume{
-				*newVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, nil, nil),
-			},
-		},
-		{
 			name: "ensure finalizer is removed if the reclaim policy is Retain or Recycle with addFinalizer enabled",
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimRetain, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -676,7 +661,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, nil, &timestamp),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -688,7 +672,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedMetrics: testMetrics{
@@ -702,7 +685,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, &timestamp),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedMetrics: testMetrics{
@@ -716,7 +698,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newBadTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -733,7 +714,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, map[string]string{annDynamicallyProvisioned: "foo.bar/baz"}, []string{finalizerPV}, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			verbs:           []string{"delete"},
@@ -754,7 +734,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, map[string]string{annMigratedTo: "foo.bar/baz"}, nil, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -766,7 +745,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, map[string]string{annMigratedTo: "foo.bar/baz"}, nil, nil),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -778,7 +756,6 @@ func TestController(t *testing.T) {
 			objs: []runtime.Object{
 				newCSIVolume("volume-1", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, nil, nil, nil, "foo.bar/baz"),
 			},
-			addFinalizer:    true,
 			provisionerName: "foo.bar/baz",
 			provisioner:     newTestProvisioner(),
 			expectedVolumes: []v1.PersistentVolume{
@@ -799,9 +776,6 @@ func TestController(t *testing.T) {
 
 			var ctrl testProvisionController
 			provisionerOptions := make([]func(*ProvisionController) error, 0)
-			if test.addFinalizer {
-				provisionerOptions = append(provisionerOptions, AddFinalizer(true))
-			}
 			_, ctx := ktesting.NewTestContext(t)
 			if test.additionalProvisionerNames == nil {
 				ctrl = newTestProvisionController(ctx, client, test.provisionerName, test.provisioner, provisionerOptions...)
@@ -1347,7 +1321,6 @@ func TestShouldDeleteWithFinalizer(t *testing.T) {
 			client := fake.NewSimpleClientset()
 			provisioner := newTestProvisioner()
 			provisionerOptions := make([]func(*ProvisionController) error, 0)
-			provisionerOptions = append(provisionerOptions, AddFinalizer(true))
 			ctrl := newTestProvisionController(ctx, client, test.provisionerName, provisioner, provisionerOptions...)
 			test.volume.ObjectMeta.DeletionTimestamp = test.deletionTimestamp
 
